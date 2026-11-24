@@ -569,13 +569,14 @@ async function Downloads({ path, sp, title, site }: DynProps & { title: string }
 // ───────────────────────── Faculty ─────────────────────────
 function FacultyCard({ f, media, compact }: { f: any; media: MediaMap; compact?: boolean }) {
   return (
-    <div className="flex flex-col items-center overflow-hidden rounded-xl border border-primary-100/70 bg-cream-50 pb-3 text-center shadow-card">
-      <div className="h-[110px] w-full bg-gradient-to-b from-primary-50 to-white"><Img id={f.photoId} media={media} className="mx-auto h-full w-auto object-contain" sizes="200px" alt={`Portrait of ${f.fullName}`} /></div>
+    <div className="flex h-full flex-col items-center overflow-hidden rounded-xl border border-primary-100/70 bg-cream-50 pb-3 text-center shadow-card">
+      {/* Every photo fills the same frame, whatever its original shape. */}
+      <div className="h-[130px] w-full shrink-0 overflow-hidden bg-gradient-to-b from-primary-50 to-white"><Img id={f.photoId} media={media} className="h-full w-full object-cover object-top" sizes="240px" alt={`Portrait of ${f.fullName}`} /></div>
       <p className="mt-2 px-2 font-serif text-[15px] font-bold leading-tight text-primary-800">{f.fullName}</p>
       <p className="text-[12.5px] text-primary-900/80">{f.designation}</p>
       {f.subject && <p className="mt-1.5 flex items-center gap-1 text-[12.5px] text-primary-900"><BookOpen className="h-3.5 w-3.5" aria-hidden />{f.subject}</p>}
       {!compact && f.experience && <p className="flex items-center gap-1 text-[12.5px] text-primary-900"><UserRound className="h-3.5 w-3.5" aria-hidden />{f.experience}</p>}
-      <Button href={`/academics/faculty/${f.slug}`} className="mt-2 px-3 py-1 text-[12.5px]">View Profile</Button>
+      <span className="mt-auto pt-2.5"><Button href={`/academics/faculty/${f.slug}`} className="whitespace-nowrap px-4 py-1.5 text-[13.5px]">View Profile</Button></span>
     </div>
   );
 }
@@ -585,21 +586,23 @@ function FacultyFeatured({ extras, ctx }: DynProps) {
   const f = extras?.filters ?? { departments: [], programmes: [] };
   return (
     <section>
-      <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center">
-        <Heading icon="UsersRound" className="mb-0 shrink-0">Meet Our Faculty</Heading>
-        <form action="/academics/faculty/directory" className="flex flex-1 flex-wrap gap-2" role="search">
-          <input name="search" placeholder="Search by name, subject or keyword…" aria-label="Search faculty" className="min-w-[180px] flex-1 rounded-full border border-primary-200 bg-white px-4 py-1.5 text-[13px]" />
-          <select name="department" aria-label="Department" className="rounded-full border border-primary-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-primary-800"><option value="">All Departments</option>{f.departments.map((d: string) => <option key={d}>{d}</option>)}</select>
-          <select name="programme" aria-label="Programme" className="rounded-full border border-primary-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-primary-800"><option value="">All Programmes</option>{f.programmes.map((d: string) => <option key={d}>{d}</option>)}</select>
+      <Heading icon="UsersRound" className="mb-3">Meet Our Faculty</Heading>
+      <div className="mb-4">
+        <form action="/academics/faculty/directory" className="flex flex-wrap gap-2" role="search">
+          <input name="search" placeholder="Search by name, subject or keyword…" aria-label="Search faculty" className="w-full rounded-full border border-primary-200 bg-white px-4 py-1.5 text-[13px]" />
+          <select name="department" aria-label="Department" className="min-w-0 flex-1 rounded-full border border-primary-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-primary-800"><option value="">All Departments</option>{f.departments.map((d: string) => <option key={d}>{d}</option>)}</select>
+          <select name="programme" aria-label="Programme" className="min-w-0 flex-1 rounded-full border border-primary-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-primary-800"><option value="">All Programmes</option>{f.programmes.map((d: string) => <option key={d}>{d}</option>)}</select>
           <button className="flex items-center gap-1 rounded-full bg-primary-800 px-5 py-1.5 font-serif text-[13px] font-bold text-white"><Search className="h-4 w-4" aria-hidden />Search</button>
         </form>
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-[repeat(5,1fr)_minmax(0,1.2fr)]">
-        {list.map((x: any) => <FacultyCard key={x.id} f={x} media={ctx.media} compact />)}
-        <Link href="/academics/faculty/directory" className="col-span-2 flex items-center gap-3 self-center rounded-xl border-2 border-primary-200 bg-white p-4 shadow-card sm:col-span-1 hover:border-primary-500">
-          <Icon name="UsersRound" className="h-10 w-10 text-primary-800" />
-          <span className="flex-1"><span className="block font-serif text-[17px] font-bold text-primary-800">View Faculty Directory</span><span className="text-[12.5px] text-primary-900">Browse all faculty members by department and programme.</span></span>
-          <ArrowRight className="h-5 w-5 text-primary-800" aria-hidden />
+      {/* Three featured members plus the directory card: four equal columns. */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {list.slice(0, 3).map((x: any) => <FacultyCard key={x.id} f={x} media={ctx.media} compact />)}
+        <Link href="/academics/faculty/directory" className="group flex h-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary-200 bg-white p-4 text-center shadow-card transition hover:border-primary-500 hover:bg-primary-50/40">
+          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-50 text-primary-800 transition group-hover:bg-primary-100"><Icon name="UsersRound" className="h-7 w-7" /></span>
+          <span className="font-serif text-[16px] font-bold leading-tight text-primary-800">View Faculty Directory</span>
+          <span className="text-[12.5px] leading-snug text-primary-900/80">Browse all faculty members by department and programme.</span>
+          <span className="mt-1 inline-flex items-center gap-1.5 whitespace-nowrap font-serif text-[13.5px] font-bold text-primary-800">View All<ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" aria-hidden /></span>
         </Link>
       </div>
     </section>
@@ -609,7 +612,8 @@ function FacultyFeatured({ extras, ctx }: DynProps) {
 async function FacultyDirectory({ path, sp }: DynProps) {
   const page = num(sp.page);
   const view = one(sp.view) === 'list' ? 'list' : 'grid';
-  const d = await api(`/faculty${qs({ page, search: one(sp.search), department: one(sp.department), programme: one(sp.programme), designation: one(sp.designation), sort: one(sp.sort) || undefined })}`);
+  // 20 per page: complete rows at 5, 4 and 2 columns.
+  const d = await api(`/faculty${qs({ page, pageSize: 20, search: one(sp.search), department: one(sp.department), programme: one(sp.programme), designation: one(sp.designation), sort: one(sp.sort) || undefined })}`);
   if (!d) return null;
   const { pagination: p, filters: f } = d;
   return (
@@ -631,7 +635,7 @@ async function FacultyDirectory({ path, sp }: DynProps) {
         </div>
       </div>
       {!d.items.length ? <Empty>No faculty members match your search.</Empty> : view === 'grid' ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">{d.items.map((x: any) => <FacultyCard key={x.id} f={x} media={d.media} />)}</div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{d.items.map((x: any) => <FacultyCard key={x.id} f={x} media={d.media} />)}</div>
       ) : (
         <ul className="divide-y divide-primary-100 rounded-xl border border-primary-100 bg-white">
           {d.items.map((x: any) => (

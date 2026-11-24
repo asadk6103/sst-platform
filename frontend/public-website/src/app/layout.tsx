@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 // Fonts are bundled (no download at build or run time).
 import '@fontsource-variable/playfair-display/wght.css';
 import '@fontsource-variable/playfair-display/wght-italic.css';
@@ -8,6 +9,7 @@ import { getSite, siteUrl } from '@/lib/api';
 import { themeCss } from '@/lib/theme';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/shell';
+import { NavigationProgress } from '@/components/NavigationProgress';
 import './globals.css';
 
 
@@ -36,6 +38,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <style dangerouslySetInnerHTML={{ __html: themeCss(s.theme) }} />
       </head>
       <body suppressHydrationWarning>
+        <Suspense fallback={null}>
+          <NavigationProgress />
+        </Suspense>
         <a href="#main" className="skip-link">Skip to main content</a>
         {preview && (
           <div className="sticky top-0 z-[60] flex items-center justify-center gap-3 bg-gold-400 px-4 py-1.5 text-sm font-semibold text-primary-900">

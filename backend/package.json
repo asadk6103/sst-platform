@@ -1,0 +1,59 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/server.ts",
+    "start": "node dist/server.js",
+    "build": "prisma generate && node build.mjs",
+    "migrate": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "seed": "tsx prisma/seed.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@asteasolutions/zod-to-openapi": "7.3.4",
+    "@prisma/client": "6.19.3",
+    "@sst/shared": "*",
+    "bcryptjs": "3.0.3",
+    "cookie-parser": "1.4.7",
+    "cors": "2.8.6",
+    "express": "4.22.3",
+    "express-rate-limit": "8.7.5",
+    "file-type": "22.3.0",
+    "helmet": "8.3.0",
+    "jsonwebtoken": "9.0.3",
+    "multer": "2.5.0",
+    "otplib": "12.0.1",
+    "prisma": "6.19.3",
+    "qrcode": "1.5.4",
+    "sanitize-html": "2.18.2",
+    "sharp": "0.35.5",
+    "swagger-ui-express": "5.0.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "1.4.10",
+    "@types/cors": "2.8.19",
+    "@types/express": "4.17.25",
+    "@types/jsonwebtoken": "9.0.10",
+    "@types/multer": "2.3.0",
+    "@types/node": "22.20.5",
+    "@types/qrcode": "1.5.6",
+    "@types/sanitize-html": "2.16.2",
+    "@types/supertest": "7.2.1",
+    "@types/swagger-ui-express": "4.1.8",
+    "esbuild": "0.28.2",
+    "nodemon": "3.1.14",
+    "playwright": "^1.65.1",
+    "supertest": "7.3.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

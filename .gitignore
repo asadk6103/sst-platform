@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+backend/uploads/
+test-results/
+playwright-report/
+documentation/screenshots/tmp/
+backend/private-uploads/
+*.tsbuildinfo
+backend/config/

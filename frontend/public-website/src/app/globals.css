@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  --font-serif: "Playfair Display Variable";
+  --font-sans: "Montserrat Variable";
+  scroll-behavior: smooth;
+}
+body {
+  @apply bg-white font-sans text-primary-900 antialiased;
+}
+:focus-visible {
+  outline: 3px solid rgb(var(--accent));
+  outline-offset: 2px;
+}
+.skip-link {
+  @apply absolute left-2 top-2 z-[100] -translate-y-20 rounded bg-primary-900 px-4 py-2 text-white focus:translate-y-0;
+}
+
+/* Sanitised rich text from the CMS */
+.rich p { margin: 0 0 0.9em; }
+.rich h2 { @apply mb-2 mt-5 font-serif text-[22px] font-bold text-primary-800; }
+.rich h3 { @apply mb-2 mt-4 font-serif text-[18px] font-bold text-primary-800; }
+.rich ul { @apply mb-3 list-disc pl-6; }
+.rich ol { @apply mb-3 list-decimal pl-6; }
+.rich li { @apply mb-1; }
+.rich a { @apply font-semibold text-primary-700 underline; }
+.rich blockquote { @apply my-4 border-l-4 border-gold-400 pl-4 font-serif italic text-primary-800; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+@media print {
+  header, footer { display: none !important; }
+  body { color: #000; }
+}

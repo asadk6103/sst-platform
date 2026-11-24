@@ -1,0 +1,58 @@
+# SST Platform — automatic HTTPS (Let's Encrypt) for the Docker Compose stack.
+#
+# Adds a Caddy container in front of nginx. Caddy obtains the certificate from Let's Encrypt,
+# renews it automatically, redirects http:// to https:// and serves HTTP/2 and HTTP/3.
+#
+# Enabled by the installer (./install/install-docker.sh --domain … --email …), which writes
+# these lines to .env so plain `docker compose …` commands keep using it:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml
+#   COMPOSE_PATH_SEPARATOR=:
+#   DOMAIN=www.example.edu.pk            (several: "example.edu.pk, www.example.edu.pk")
+#   ACME_EMAIL=it@example.edu.pk         (Let's Encrypt expiry notices)
+#   ACME_CA=…                            optional, e.g. the Let's Encrypt staging URL for tests
+#
+# Requirements: DOMAIN must point (DNS A/AAAA record) to this server, and ports 80 and 443
+# must be reachable from the internet. Needs Docker Compose 2.24 or newer.
+
+services:
+  https:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy_data:/data       # certificates and ACME account — keep this volume
+      - caddy_config:/config
+    depends_on:
+      - nginx
+
+  # nginx is now only reachable through Caddy.
+  nginx:
+    ports: !reset []
+
+  api:
+    environment:
+      # two proxies (Caddy → nginx) sit in front of the API: needed for correct client IPs
+      TRUST_PROXY: "2"
+
+configs:
+  caddyfile:
+    content: |
+      {
+        email ${ACME_EMAIL:?set ACME_EMAIL in .env (used by Let's Encrypt)}
+        acme_ca ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      }
+
+      ${DOMAIN:?set DOMAIN in .env (e.g. www.example.edu.pk)} {
+        header Strict-Transport-Security "max-age=31536000"
+        reverse_proxy nginx:80
+      }
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,788 @@
+// SST Platform — PostgreSQL schema
+//
+// Conventions
+// - Workflow-managed content tables (pages, people, leadership_messages, posts, events, stories)
+//   keep the *working copy* in regular columns and the *public* copy in `published_data`.
+//   Public APIs only ever read `published_data`, so drafts / unapproved edits are never exposed.
+// - Media are referenced by UUID inside content; public responses return a `media` dictionary.
+// - Soft deletion via `deleted_at`; audit + created/updated-by on every content table.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity & access ─────────────────────────────
+
+model User {
+  id                   String    @id @default(uuid()) @db.Uuid
+  email                String    @unique
+  name                 String
+  passwordHash         String    @map("password_hash")
+  isActive             Boolean   @default(true) @map("is_active")
+  twoFactorEnabled     Boolean   @default(false) @map("two_factor_enabled")
+  twoFactorSecret      String?   @map("two_factor_secret")
+  passwordResetHash    String?   @map("password_reset_hash")
+  passwordResetExpires DateTime? @map("password_reset_expires")
+  failedLoginCount     Int       @default(0) @map("failed_login_count")
+  lockedUntil          DateTime? @map("locked_until")
+  lastLoginAt          DateTime? @map("last_login_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  roles     UserRole[]
+  sessions  Session[]
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  name        String
+  description String?
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String @id @default(uuid()) @db.Uuid
+  key         String @unique
+  module      String
+  description String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userAgent String?   @map("user_agent")
+  ip        String?
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ───────────────────────────── Workflow enums ─────────────────────────────
+
+enum ContentStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  PUBLISHED
+}
+
+// ───────────────────────────── Pages (fixed templates) ─────────────────────────────
+
+model Page {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique // e.g. "home", "about/history-heritage"
+  template           String // key of a predefined template in @sst/shared
+  section            String // "home" | "about" | "academics" ...
+  title              String
+  subtitle           String?
+  heroImageId        String?       @map("hero_image_id") @db.Uuid
+  content            Json          @default("{}")
+  seoTitle           String?       @map("seo_title")
+  seoDescription     String?       @map("seo_description")
+  seoKeywords        String?       @map("seo_keywords")
+  ogImageId          String?       @map("og_image_id") @db.Uuid
+  sortOrder          Int           @default(0) @map("sort_order")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([section])
+  @@index([status])
+  @@map("website_pages")
+}
+
+// ───────────────────────────── Leadership ─────────────────────────────
+
+/// Centralised person record. One person may sit on several committees (CommitteeMember).
+model Person {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique
+  fullName           String        @map("full_name")
+  photoId            String?       @map("photo_id") @db.Uuid
+  designation        String? // primary designation shown on profile
+  shortBio           String?       @map("short_bio")
+  biography          String? // sanitised rich text (HTML)
+  education          String?
+  profession         String?
+  experience         String?
+  responsibilities   Json          @default("[]") // string[]
+  focusAreas         Json          @default("[]") @map("focus_areas") // {icon,label}[]
+  affiliations       Json          @default("[]") // {name,role}[]
+  socialLinks        Json          @default("[]") @map("social_links") // {platform,url}[]
+  appointmentDate    DateTime?     @map("appointment_date") @db.Date
+  tenure             String?
+  email              String?
+  isActive           Boolean       @default(true) @map("is_active")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  memberships CommitteeMember[]
+  messages    LeadershipMessage[]
+
+  @@index([fullName])
+  @@index([status])
+  @@map("website_people")
+}
+
+/// Board of Trustees, Executive Committee, School Administration ...
+model Committee {
+  id           String   @id @default(uuid()) @db.Uuid
+  slug         String   @unique
+  name         String
+  description  String?
+  profileLabel String   @default("Profile") @map("profile_label") // e.g. "Trustee Profile"
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  members CommitteeMember[]
+
+  @@map("website_committees")
+}
+
+/// A person's role assignment within a committee (the website directories are built from these).
+model CommitteeMember {
+  id          String    @id @default(uuid()) @db.Uuid
+  committeeId String    @map("committee_id") @db.Uuid
+  personId    String    @map("person_id") @db.Uuid
+  roleTitle   String    @map("role_title") // "Chairman, Board of Trustees", "Member" ...
+  isHead      Boolean   @default(false) @map("is_head")
+  sortOrder   Int       @default(0) @map("sort_order")
+  startDate   DateTime? @map("start_date") @db.Date
+  endDate     DateTime? @map("end_date") @db.Date
+  isVisible   Boolean   @default(true) @map("is_visible")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  committee Committee @relation(fields: [committeeId], references: [id], onDelete: Cascade)
+  person    Person    @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([committeeId, personId])
+  @@index([personId])
+  @@map("website_committee_members")
+}
+
+model LeadershipMessage {
+  id                 String        @id @default(uuid()) @db.Uuid
+  key                String        @unique // "chairman" | "principal"
+  personId           String?       @map("person_id") @db.Uuid
+  eyebrow            String?
+  heading            String
+  salutation         String?
+  excerpt            String? // teaser used on overview pages
+  body               String // sanitised HTML
+  quote              String?
+  signatureImageId   String?       @map("signature_image_id") @db.Uuid
+  signatoryTitle     String?       @map("signatory_title")
+  pdfDocumentId      String?       @map("pdf_document_id") @db.Uuid
+  publicationDate    DateTime?     @map("publication_date") @db.Date
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  person Person? @relation(fields: [personId], references: [id], onDelete: SetNull)
+
+  @@map("website_messages")
+}
+
+// ───────────────────────────── News, events, publications ─────────────────────────────
+
+enum PostKind {
+  NEWS
+  ANNOUNCEMENT
+  ACHIEVEMENT
+}
+
+model Post {
+  id                 String        @id @default(uuid()) @db.Uuid
+  kind               PostKind      @default(NEWS)
+  slug               String        @unique
+  title              String
+  category           String?
+  excerpt            String?
+  body               String        @default("")
+  featuredImageId    String?       @map("featured_image_id") @db.Uuid
+  author             String?
+  publicationDate    DateTime      @default(now()) @map("publication_date")
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  badge              String? // e.g. "1st Position"
+  documentId         String?       @map("document_id") @db.Uuid // attached circular / notice
+  views              Int           @default(0)
+  seoTitle           String?       @map("seo_title")
+  seoDescription     String?       @map("seo_description")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([kind, publicationDate])
+  @@index([status])
+  @@map("website_news")
+}
+
+model Event {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique
+  title              String
+  category           String?
+  excerpt            String?
+  body               String        @default("")
+  featuredImageId    String?       @map("featured_image_id") @db.Uuid
+  location           String?
+  startDate          DateTime      @map("start_date")
+  endDate            DateTime?     @map("end_date")
+  author             String?
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  seoTitle           String?       @map("seo_title")
+  seoDescription     String?       @map("seo_description")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([startDate])
+  @@index([status])
+  @@map("website_events")
+}
+
+enum StoryKind {
+  STUDENT_TESTIMONIAL
+  PARENT_TESTIMONIAL
+  ALUMNI_STORY
+  STUDENT_SUCCESS
+  SCHOLARSHIP_SUCCESS
+  ACADEMIC_ACHIEVEMENT
+}
+
+/// Testimonials and success stories.
+model Story {
+  id                 String        @id @default(uuid()) @db.Uuid
+  kind               StoryKind
+  name               String
+  subtitle           String? // "SST Alumnus (Class of 2018)"
+  detail             String? // "Now: Civil Servant (PCS)"
+  quote              String
+  body               String? // optional long story (HTML)
+  photoId            String?       @map("photo_id") @db.Uuid
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  sortOrder          Int           @default(0) @map("sort_order")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([kind])
+  @@index([status])
+  @@map("website_testimonials")
+}
+
+// ───────────────────────────── Statistics, navigation, settings ─────────────────────────────
+
+model Statistic {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  group       String   @default("general") // "impact", "homepage" ...
+  label       String
+  value       String // display value, e.g. "3,500+"
+  description String?
+  icon        String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  isPublished Boolean  @default(true) @map("is_published")
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([group, sortOrder])
+  @@map("website_statistics")
+}
+
+enum NavMenu {
+  MAIN
+  UTILITY
+  ABOUT_SIDEBAR
+  FOOTER_QUICK
+  FOOTER_USEFUL
+  FOOTER_LEGAL
+}
+
+model NavigationItem {
+  id           String           @id @default(uuid()) @db.Uuid
+  menu         NavMenu
+  label        String
+  href         String
+  icon         String?
+  parentId     String?          @map("parent_id") @db.Uuid
+  sortOrder    Int              @default(0) @map("sort_order")
+  isVisible    Boolean          @default(true) @map("is_visible")
+  isComingSoon Boolean          @default(false) @map("is_coming_soon")
+  openInNewTab Boolean          @default(false) @map("open_in_new_tab")
+  updatedById  String?          @map("updated_by_id") @db.Uuid
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+  parent       NavigationItem?  @relation("NavTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     NavigationItem[] @relation("NavTree")
+
+  @@index([menu, sortOrder])
+  @@map("website_navigation")
+}
+
+/// Key/value settings: identity, theme, contact, social, seo defaults.
+model Setting {
+  key         String   @id
+  value       Json
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("website_settings")
+}
+
+// ───────────────────────────── Media, documents, galleries ─────────────────────────────
+
+model Media {
+  id           String    @id @default(uuid()) @db.Uuid
+  originalName String    @map("original_name")
+  storageKey   String    @map("storage_key") // path of the preserved original under uploads/
+  mimeType     String    @map("mime_type")
+  size         Int
+  width        Int?
+  height       Int?
+  variants     Json      @default("[]") // [{width, key}]
+  alt          String?
+  caption      String?
+  title        String?
+  category     String    @default("general")
+  checksum     String?
+  revision     Int       @default(1) // bumped on file replacement (cache busting)
+  uploadedById String?   @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  usages MediaUsage[]
+
+  @@index([category])
+  @@index([mimeType])
+  @@map("website_media")
+}
+
+/// Which content record references which media item (maintained on save).
+model MediaUsage {
+  id         String  @id @default(uuid()) @db.Uuid
+  mediaId    String  @map("media_id") @db.Uuid
+  entityType String  @map("entity_type")
+  entityId   String  @map("entity_id")
+  label      String?
+  media      Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([mediaId, entityType, entityId])
+  @@index([entityType, entityId])
+  @@map("website_media_usage")
+}
+
+model Document {
+  id            String    @id @default(uuid()) @db.Uuid
+  slug          String    @unique
+  title         String
+  description   String?
+  category      String    @default("other") // Category slug (scope: documents)
+  fileId        String    @map("file_id") @db.Uuid // Media record holding the file
+  publishedDate DateTime? @map("published_date") @db.Date
+  sortOrder     Int       @default(0) @map("sort_order")
+  isPublished   Boolean   @default(false) @map("is_published")
+  createdById   String?   @map("created_by_id") @db.Uuid
+  updatedById   String?   @map("updated_by_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  deletedAt     DateTime? @map("deleted_at")
+
+  @@index([category])
+  @@map("website_documents")
+}
+
+model Gallery {
+  id           String    @id @default(uuid()) @db.Uuid
+  slug         String    @unique
+  title        String
+  description  String?
+  category     String // Category slug (scope: gallery)
+  eventDate    DateTime? @map("event_date") @db.Date
+  videos       Json      @default("[]") // [{title, url, duration}]
+  isFeatured   Boolean   @default(false) @map("is_featured")
+  coverImageId String?   @map("cover_image_id") @db.Uuid
+  sortOrder    Int       @default(0) @map("sort_order")
+  isPublished  Boolean   @default(false) @map("is_published")
+  createdById  String?   @map("created_by_id") @db.Uuid
+  updatedById  String?   @map("updated_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  images GalleryImage[]
+
+  @@index([category])
+  @@map("website_galleries")
+}
+
+model GalleryImage {
+  id        String  @id @default(uuid()) @db.Uuid
+  galleryId String  @map("gallery_id") @db.Uuid
+  mediaId   String  @map("media_id") @db.Uuid
+  caption   String?
+  sortOrder Int     @default(0) @map("sort_order")
+  gallery   Gallery @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+
+  @@index([galleryId, sortOrder])
+  @@map("website_gallery_images")
+}
+
+// ───────────────────────────── History & audit ─────────────────────────────
+
+model Revision {
+  id          String   @id @default(uuid()) @db.Uuid
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  version     Int
+  action      String // SAVE | PUBLISH | RESTORE | CREATE
+  data        Json
+  comment     String?
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([entityType, entityId, version])
+  @@index([entityType, entityId])
+  @@map("website_revisions")
+}
+
+model PublicationLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  action     String // SUBMIT | APPROVE | REJECT | PUBLISH | UNPUBLISH | SCHEDULE
+  fromStatus String?  @map("from_status")
+  toStatus   String   @map("to_status")
+  comment    String?
+  userId     String?  @map("user_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("website_publication_logs")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  summary    String?
+  details    Json?
+  ip         String?
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+// ───────────────────────────── Taxonomy ─────────────────────────────
+
+/// Managed category lists per section (news, events, announcements, achievements,
+/// gallery, documents, faq, departments …). Content stores the category name/slug.
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  scope       String
+  name        String
+  slug        String
+  icon        String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([scope, slug])
+  @@index([scope, sortOrder])
+  @@map("website_categories")
+}
+
+// ───────────────────────────── Academics ─────────────────────────────
+
+model Faculty {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique
+  fullName           String        @map("full_name")
+  photoId            String?       @map("photo_id") @db.Uuid
+  designation        String?
+  department         String?
+  programmes         String? // e.g. "Secondary (IX–X)"
+  subject            String?
+  qualification      String? // headline qualification
+  experience         String? // e.g. "10+ Years"
+  joinedDate         DateTime?     @map("joined_date") @db.Date
+  email              String?
+  about              String?
+  qualifications     Json          @default("[]")
+  teachingAreas      Json          @default("[]") @map("teaching_areas")
+  interests          Json          @default("[]")
+  development        Json          @default("[]")
+  achievements       Json          @default("[]")
+  quote              String?
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  sortOrder          Int           @default(0) @map("sort_order")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([fullName])
+  @@index([status])
+  @@map("website_faculty")
+}
+
+/// One board examination result set (e.g. Matric (SSC) 2025).
+model ExamResult {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique
+  examination        String
+  year               Int
+  summary            Json          @default("{}") // {aRate, totalStudents, distinctions, position, passRate, topHolders}
+  grades             Json          @default("[]") // [{label, range, count, percent}]
+  subjects           Json          @default("[]") // [{name, rate, distinctions}]
+  classes            Json          @default("[]") // [{name, total, aPlus, b, belowB, passRate}]
+  achievers          Json          @default("[]") // [{name, photoId, marks, total, percentage, grade}]
+  documents          Json          @default("[]") // document ids
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@unique([examination, year])
+  @@index([status])
+  @@map("website_exam_results")
+}
+
+// ───────────────────────────── Careers, FAQs, submissions ─────────────────────────────
+
+model Vacancy {
+  id                 String        @id @default(uuid()) @db.Uuid
+  slug               String        @unique
+  title              String
+  department         String?
+  location           String?
+  jobType            String?       @map("job_type")
+  closingDate        DateTime?     @map("closing_date") @db.Date
+  summary            String?
+  body               String        @default("")
+  isFeatured         Boolean       @default(false) @map("is_featured")
+  // workflow
+  status             ContentStatus @default(DRAFT)
+  publishedData      Json?         @map("published_data")
+  publishedAt        DateTime?     @map("published_at")
+  scheduledPublishAt DateTime?     @map("scheduled_publish_at")
+  submittedAt        DateTime?     @map("submitted_at")
+  submittedById      String?       @map("submitted_by_id") @db.Uuid
+  reviewedAt         DateTime?     @map("reviewed_at")
+  reviewedById       String?       @map("reviewed_by_id") @db.Uuid
+  reviewComment      String?       @map("review_comment")
+  createdById        String?       @map("created_by_id") @db.Uuid
+  updatedById        String?       @map("updated_by_id") @db.Uuid
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
+
+  @@index([status])
+  @@map("website_vacancies")
+}
+
+model Faq {
+  id          String   @id @default(uuid()) @db.Uuid
+  category    String // Category slug (scope: faq)
+  question    String
+  answer      String
+  sortOrder   Int      @default(0) @map("sort_order")
+  isPublished Boolean  @default(true) @map("is_published")
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([category, sortOrder])
+  @@map("website_faqs")
+}
+
+enum SubmissionType {
+  CONTACT
+  SUBSCRIBE
+  NOMINATION
+  CAREER
+  ALUMNI
+}
+
+enum SubmissionStatus {
+  NEW
+  READ
+  ARCHIVED
+}
+
+/// Messages and applications sent from website forms.
+model Submission {
+  id        String           @id @default(uuid()) @db.Uuid
+  type      SubmissionType
+  status    SubmissionStatus @default(NEW)
+  name      String?
+  email     String?
+  phone     String?
+  subject   String?
+  message   String?
+  data      Json             @default("{}")
+  fileKey   String?          @map("file_key") // private upload (e.g. CV), never publicly served
+  fileName  String?          @map("file_name")
+  ip        String?
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  @@index([type, status, createdAt])
+  @@map("website_submissions")
+}

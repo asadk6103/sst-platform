@@ -1,0 +1,64 @@
+# Development overlay — hot reload, source bind-mounted, extra ports exposed.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Exposed for tools: API http://localhost:4200 (docs: /api/docs), PostgreSQL localhost:5433.
+# After changing package.json, add `-V` (renew anonymous volumes) so node_modules are rebuilt.
+
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+
+  admin:
+    build:
+      target: dev
+    image: sst/admin:dev
+    environment:
+      API_PROXY_TARGET: http://api:4200
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3030:80"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/frontend/admin-portal/node_modules
+      - /app/packages/shared/node_modules
+
+  web:
+    build:
+      target: dev
+    image: sst/web:dev
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/frontend/public-website/node_modules
+      - /app/frontend/public-website/.next
+      - /app/packages/shared/node_modules
+
+  api:
+    build:
+      target: dev
+    image: sst/api:dev
+    environment:
+      NODE_ENV: development
+    ports:
+      - "4200:4200"
+    volumes:
+      - .:/app
+      # keep the container's Linux node_modules (do not use the host's)
+      - /app/node_modules
+      - /app/backend/node_modules
+      - /app/packages/shared/node_modules
+      - uploads:/app/backend/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4200/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 10

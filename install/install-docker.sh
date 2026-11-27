@@ -10,6 +10,8 @@
 #     ./install/install-docker.sh                     # http://<server>:8000/
 #     sudo ./install/install-docker.sh --install-docker --port 80
 #     ./install/install-docker.sh --domain www.school.pk --email it@school.pk   # HTTPS
+#     ./install/install-docker.sh --shared-proxy --domain www.school.pk --email it@school.pk
+#                                  # HTTPS when another SST application runs on the same server
 #
 #  Re-running the script upgrades the installation (rebuild + restart); data volumes are kept.
 #  Settings given once (port, domain) are saved in .env and reused on later runs.
@@ -22,7 +24,12 @@ DOMAIN=""
 ACME_EMAIL=""
 STAGING=0
 NO_HTTPS=0
+SHARED=0
+SHARED_DIR=""
 HTTPS_FILES="docker-compose.yml:docker-compose.https.yml"
+SHARED_FILES="docker-compose.yml:docker-compose.shared-proxy.yml"
+APP_NAME="sst-platform"
+UPSTREAM="sst-platform-nginx:80"
 LE_STAGING="https://acme-staging-v02.api.letsencrypt.org/directory"
 
 usage() {
@@ -36,6 +43,11 @@ Usage: ./install/install-docker.sh [options]
   --email ADDRESS    Contact address for Let's Encrypt (required with --domain)
   --staging          Use Let's Encrypt's test service (untrusted certificate, for trial runs)
   --no-https         Turn HTTPS off again (back to plain HTTP on --port / 8000)
+  --shared-proxy     Several SST applications on this server (e.g. SST Alumni Connect as well): use
+                     one shared HTTPS proxy for ports 80/443 instead of a proxy per application.
+                     Use together with --domain/--email (the other application's installer
+                     takes the same option with its own domain)
+  --shared-proxy-dir DIR  Folder of the shared proxy (default: ../sst-edge next to this project)
   --install-docker   Install Docker Engine + Compose plugin if missing (Linux, needs root)
   -h, --help         Show this help
 EOF
@@ -48,6 +60,8 @@ while [ $# -gt 0 ]; do
     --email) ACME_EMAIL="${2:-}"; shift 2 ;;
     --staging) STAGING=1; shift ;;
     --no-https) NO_HTTPS=1; shift ;;
+    --shared-proxy) SHARED=1; shift ;;
+    --shared-proxy-dir) SHARED_DIR="${2:-}"; shift 2 ;;
     --install-docker) INSTALL_DOCKER=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -70,6 +84,9 @@ fi
 if [ -n "$DOMAIN" ] && [ -z "$ACME_EMAIL" ]; then die "--domain needs --email (Let's Encrypt sends certificate notices there)."; fi
 if [ -n "$ACME_EMAIL" ] && [ -z "$DOMAIN" ]; then die "--email needs --domain."; fi
 if [ -n "$DOMAIN" ] && [ $NO_HTTPS = 1 ]; then die "--domain and --no-https cannot be combined."; fi
+if [ $SHARED = 1 ] && [ $NO_HTTPS = 1 ]; then die "--shared-proxy and --no-https cannot be combined."; fi
+# shellcheck source=install/shared-proxy.sh
+. "$(dirname "${BASH_SOURCE[0]}")/shared-proxy.sh"
 if [ -n "$DOMAIN" ]; then
   DOMAIN="$(echo "$DOMAIN" | tr -d ' ' | sed 's/,/, /g')"   # Caddy: "a.pk, www.a.pk"
   [[ "$DOMAIN" =~ ^[A-Za-z0-9.,\ -]+$ ]] || die "--domain may only contain domain names separated by commas."
@@ -123,22 +140,37 @@ get_env() { if [ -f .env ]; then sed -n "s/^$1=//p" .env | tail -n1 | tr -d '\r"
 if [ -n "$HTTP_PORT" ]; then set_env HTTP_PORT "$HTTP_PORT"; fi
 HTTP_PORT="$(get_env HTTP_PORT)"; HTTP_PORT="${HTTP_PORT:-8000}"
 
+WAS_SHARED=0
+[ "$(get_env COMPOSE_FILE)" = "$SHARED_FILES" ] && WAS_SHARED=1
 if [ -n "$DOMAIN" ]; then
   # Saved in .env so that every later `docker compose …` command keeps HTTPS enabled.
-  set_env COMPOSE_FILE "$HTTPS_FILES"
+  # A server already using the shared proxy keeps it when only the domain changes.
+  if [ $SHARED = 1 ] || [ $WAS_SHARED = 1 ]; then set_env COMPOSE_FILE "$SHARED_FILES"; else set_env COMPOSE_FILE "$HTTPS_FILES"; fi
   set_env COMPOSE_PATH_SEPARATOR ":"
   set_env DOMAIN "\"$DOMAIN\""
   set_env ACME_EMAIL "$ACME_EMAIL"
   if [ $STAGING = 1 ]; then set_env ACME_CA "$LE_STAGING"; else del_env ACME_CA; fi
+elif [ $SHARED = 1 ]; then
+  [ -n "$(get_env DOMAIN)" ] && [ -n "$(get_env ACME_EMAIL)" ] || die "--shared-proxy needs --domain and --email."
+  set_env COMPOSE_FILE "$SHARED_FILES"
+  set_env COMPOSE_PATH_SEPARATOR ":"
 elif [ $NO_HTTPS = 1 ]; then
   for k in COMPOSE_FILE COMPOSE_PATH_SEPARATOR DOMAIN ACME_EMAIL ACME_CA; do del_env "$k"; done
   info "HTTPS turned off"
 fi
-HTTPS=0
-[ "$(get_env COMPOSE_FILE)" = "$HTTPS_FILES" ] && HTTPS=1
+HTTPS=0; SHARED_MODE=0
+case "$(get_env COMPOSE_FILE)" in
+  "$HTTPS_FILES") HTTPS=1 ;;
+  "$SHARED_FILES") HTTPS=1; SHARED_MODE=1 ;;
+esac
+[ -n "$SHARED_DIR" ] && set_env SHARED_PROXY_DIR "$SHARED_DIR"
+SHARED_DIR="$(get_env SHARED_PROXY_DIR)"
+SHARED_DIR="${SHARED_DIR:-$(dirname "$ROOT")/sst-edge}"
 DOMAIN="$(get_env DOMAIN)"
-FIRST_DOMAIN="${DOMAIN%%,*}"
-if [ $HTTPS = 1 ]; then info "HTTPS with Let's Encrypt for: $DOMAIN$([ "$(get_env ACME_CA)" = "$LE_STAGING" ] && echo ' (staging)')"; fi
+FIRST_DOMAIN="$(echo "${DOMAIN%%,*}" | tr -d ' ')"
+if [ $HTTPS = 1 ]; then
+  info "HTTPS with Let's Encrypt for: $DOMAIN$([ $SHARED_MODE = 1 ] && echo " (shared proxy in $SHARED_DIR)")$([ "$(get_env ACME_CA)" = "$LE_STAGING" ] && echo ' (staging)')"
+fi
 
 if "${DOCKER[@]}" volume inspect sst_pgdata >/dev/null 2>&1; then
   info "existing database found — keeping its password and data"
@@ -154,7 +186,13 @@ fi
 
 port_busy() { command -v ss >/dev/null && ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; }
 if [ $HTTPS = 1 ]; then
-  if ! compose ps --status running https 2>/dev/null | grep -q https; then
+  edge_running=0
+  if [ $SHARED_MODE = 1 ]; then
+    "${DOCKER[@]}" ps --filter "label=com.docker.compose.project=sst-edge" --filter status=running -q | grep -q . && edge_running=1
+  else
+    compose ps --status running https 2>/dev/null | grep -q https && edge_running=1
+  fi
+  if [ $edge_running = 0 ]; then
     for p in 80 443; do
       if port_busy $p; then warn "port $p is already in use by another program (another web server?). HTTPS needs ports 80 and 443."; fi
     done
@@ -173,6 +211,7 @@ fi
 
 # ── 3. build and start ───────────────────────────────────────────────────────
 step "Building and starting the containers (the first build takes several minutes)"
+[ $SHARED_MODE = 1 ] && shared_proxy_network
 compose up -d --build --remove-orphans
 
 step "Waiting for the API (the first start loads the sample content)"
@@ -190,6 +229,14 @@ if [ "$status" != healthy ]; then
 fi
 info "API is healthy"
 
+if [ $SHARED_MODE = 1 ]; then
+  step "Registering $DOMAIN with the shared HTTPS proxy ($SHARED_DIR)"
+  shared_proxy_register "$SHARED_DIR" "$APP_NAME" "$DOMAIN" "$UPSTREAM" "$(get_env ACME_EMAIL)" \
+    "$([ "$(get_env ACME_CA)" = "$LE_STAGING" ] && echo 1 || echo 0)"
+elif [ $WAS_SHARED = 1 ]; then
+  shared_proxy_unregister "$SHARED_DIR" "$APP_NAME"
+fi
+
 if [ $HTTPS = 1 ]; then
   BASE="https://$FIRST_DOMAIN"
   step "Waiting for the Let's Encrypt certificate"
@@ -203,9 +250,10 @@ if [ $HTTPS = 1 ]; then
   elif [ "$(get_env ACME_CA)" = "$LE_STAGING" ]; then
     info "staging certificate requested (browsers do not trust it). Re-run without --staging when ready."
   else
-    compose logs --tail=40 https || true
+    if [ $SHARED_MODE = 1 ]; then LOGS="cd $SHARED_DIR && docker compose logs -f caddy"; "${DOCKER[@]}" compose --project-directory "$SHARED_DIR" -f "$SHARED_DIR/docker-compose.yml" logs --tail=40 caddy || true
+    else LOGS="docker compose logs -f https"; compose logs --tail=40 https || true; fi
     warn "the certificate is not ready yet. Check that $FIRST_DOMAIN points to this server and that"
-    warn "ports 80 and 443 are open in the firewall; Caddy keeps retrying. Follow:  docker compose logs -f https"
+    warn "ports 80 and 443 are open in the firewall; Caddy keeps retrying. Follow:  $LOGS"
   fi
 else
   HOST="localhost"
@@ -235,7 +283,11 @@ cat <<EOF
     Stop:       docker compose down          (data is kept in Docker volumes)
     Upgrade:    pull the new version, then run this script again
 EOF
-if [ $HTTPS = 1 ]; then
+if [ $SHARED_MODE = 1 ]; then
+  echo "    HTTPS:      shared proxy in $SHARED_DIR, certificates renew automatically"
+  echo "                (logs: cd $SHARED_DIR && docker compose logs -f caddy)"
+  echo "                In Administration → System, the public address should be $BASE"
+elif [ $HTTPS = 1 ]; then
   echo "    HTTPS:      certificates renew automatically (docker compose logs https)"
   echo "                In Administration → System, the public address should be $BASE"
 else

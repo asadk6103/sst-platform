@@ -1,0 +1,30 @@
+# SST Platform — behind the shared HTTPS proxy (several SST applications on one server).
+#
+# Use this instead of docker-compose.https.yml when another application on the same server
+# (e.g. SST Alumni Connect) also needs ports 80/443. One Caddy container ("sst-edge" project,
+# created by the installers) owns 80/443, gets a Let's Encrypt certificate for every domain and
+# forwards each domain to its application's nginx over the shared Docker network "sst-edge".
+#
+# Enabled by:  ./install/install-docker.sh --shared-proxy --domain www.example.pk --email it@example.pk
+# which writes COMPOSE_FILE=docker-compose.yml:docker-compose.shared-proxy.yml to .env and
+# registers the domain with the shared proxy. Needs Docker Compose 2.24 or newer.
+
+services:
+  nginx:
+    # Reachable from the shared proxy as "sst-platform-nginx"; the loopback port stays for local checks.
+    ports: !override
+      - "127.0.0.1:${HTTP_PORT:-8000}:80"
+    networks:
+      default: {}
+      sst-edge:
+        aliases: [sst-platform-nginx]
+
+  api:
+    environment:
+      # two proxies (shared Caddy → nginx) sit in front of the API: needed for correct client IPs
+      TRUST_PROXY: "2"
+
+networks:
+  sst-edge:
+    external: true
+    name: sst-edge
